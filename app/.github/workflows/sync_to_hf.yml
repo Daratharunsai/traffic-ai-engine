@@ -2,6 +2,7 @@ name: Sync to Hugging Face hub
 on:
   push:
     branches: [main]
+
 jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
@@ -12,6 +13,10 @@ jobs:
           lfs: true
       - name: Push to hub
         env:
+          # This matches your NEW secret name in GitHub Settings
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          git config --global user.email "git-sync@example.com"
+          git config --global user.name "Git Sync"
+          # This line forces your local code to overwrite the Space
           git push --force https://daratharunsai:$HF_TOKEN@huggingface.co/spaces/daratharunsai/traffic-ai-engine main
