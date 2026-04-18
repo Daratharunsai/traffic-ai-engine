@@ -14,7 +14,7 @@ jobs:
           lfs: true
       - name: Push to hub
         env:
-          HF_TOKEN: ${{ secrets.HF_SYNC }}
+          HF_TOKEN: ${{ secrets.HF_SYNC_NEW }}
         run: |
           git config --global user.email "git-sync@example.com"
           git config --global user.name "Git Sync"
