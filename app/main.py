@@ -48,11 +48,11 @@ def save_to_neon(job_id, filename, total_cars, video_url):
         print(f"❌ Database Error: {e}")
 
 
-# --- 4. THE ONLY ENDPOINT WE NEED ---
+# --- 4. THE MAIN ENDPOINT ---
 @app.post("/api/v1/analyze")
 async def analyze_video(file: UploadFile = File(...)):
     
-    # Storage Cleanup (keeps only latest 3 videos in static so your drive doesn't fill up)
+    # Storage Cleanup
     all_videos = sorted([os.path.join("static", f) for f in os.listdir("static") if f.endswith(".mp4")], key=os.path.getmtime)
     while len(all_videos) >= 3:
         old_file = all_videos.pop(0)
@@ -65,50 +65,91 @@ async def analyze_video(file: UploadFile = File(...)):
     output_filename = f"output_{job_id}.mp4"
     output_path = os.path.join("static", output_filename)
 
-    # STEP A: SAVE RAW VIDEO DIRECTLY TO 'DATA' FOLDER
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # STEP B: RUN YOLO ON THE SAVED VIDEO
+    # Setup OpenCV
     cap = cv2.VideoCapture(input_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    # STEP C: PREPARE TO WRITE PROCESSED VIDEO DIRECTLY TO 'STATIC' FOLDER
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
+    # --- DETECTION ZONE ---
+    middle_line = int(height * 0.5)
+    zone_top = middle_line - 80 
+    zone_bottom = middle_line + 80 
+
     counted_ids = set()
-    vehicle_positions = {}
+    car_sequence_numbers = {} 
+    vehicle_positions = {} # NEW: Tracks where the car was in the last frame
     total_cars_passed = 0
 
     while True:
         ret, frame = cap.read()
         if not ret: break
         
-        results = model.track(frame, classes=[2, 5, 7], persist=True, tracker="bytetrack.yaml", conf=0.35, verbose=False)
+        # Draw the shaded red zone
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, zone_top), (width, zone_bottom), (0, 0, 255), -1)
+        cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+        cv2.line(frame, (0, zone_top), (width, zone_top), (0, 0, 255), 2)
+        cv2.line(frame, (0, zone_bottom), (width, zone_bottom), (0, 0, 255), 2)
+        
+        # Run YOLO - CONFIDENCE BUMPED TO 0.45 TO KILL GHOSTS
+        results = model.track(frame, classes=[2, 5, 7], persist=True, tracker="bytetrack.yaml", conf=0.45, verbose=False)
         
         if results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.int().cpu().tolist()
             track_ids = results[0].boxes.id.int().cpu().tolist()
             
             for box, track_id in zip(boxes, track_ids):
+                center_x = int((box[0] + box[2]) / 2)
                 center_y = int((box[1] + box[3]) / 2)
                 
+                # If this is the first time seeing the car, save its position
+                if track_id not in vehicle_positions:
+                    vehicle_positions[track_id] = center_y
+                    
+                prev_y = vehicle_positions[track_id]
+                
+                # --- BULLETPROOF TRIPWIRE LOGIC ---
                 if track_id not in counted_ids:
-                    if track_id in vehicle_positions and vehicle_positions[track_id] < int(height*0.5) <= center_y:
+                    # The car MUST cross the absolute middle line to be counted.
+                    # This requires historical movement, killing stationary "ghost" flashes.
+                    if (prev_y < middle_line <= center_y) or (prev_y > middle_line >= center_y):
                         counted_ids.add(track_id)
                         total_cars_passed += 1
-                        
+                        car_sequence_numbers[track_id] = total_cars_passed
+                
+                # Update the car's position for the next frame
                 vehicle_positions[track_id] = center_y
-                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
+                
+                # --- APPLY ACCURATE VISUALS ---
+                if track_id in counted_ids:
+                    box_color = (0, 255, 0) # Green for counted
+                    strict_sequence = car_sequence_numbers.get(track_id, "?")
+                    label_text = f"Counted: #{strict_sequence}"
+                else:
+                    box_color = (0, 0, 255) # Red for uncounted
+                    label_text = "Uncounted"
+
+                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), box_color, 2)
+                cv2.circle(frame, (center_x, center_y), 6, box_color, -1)
+                cv2.putText(frame, label_text, (box[0], box[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, box_color, 2)
+        
+        # --- DRAW GREEN TOTAL COUNTER BOX ---
+        text = f"TOTAL PASSED: {total_cars_passed}"
+        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)
+        cv2.rectangle(frame, (20, 20), (20 + text_width + 20, 20 + text_height + 20), (0, 255, 0), -1)
+        cv2.putText(frame, text, (30, 20 + text_height + 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
                 
         out.write(frame) 
 
     cap.release()
     out.release()
     
-    # STEP D: SAVE TO DATABASE AND RESPOND TO UI
+    # Save to Neon DB
     video_url_path = f"/static/{output_filename}"
     save_to_neon(job_id, original_filename, total_cars_passed, video_url_path)
 
@@ -116,6 +157,5 @@ async def analyze_video(file: UploadFile = File(...)):
         "status": "success",
         "job_id": job_id,
         "original_filename": original_filename,
-        "video_url": video_url_path,
-        "cars_counted": total_cars_passed
+        "video_url": video_url_path
     }
