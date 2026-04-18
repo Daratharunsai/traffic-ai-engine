@@ -8,6 +8,7 @@ import psycopg2
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware  # <-- ADDED
 from ultralytics import YOLO
 
 load_dotenv()
@@ -17,48 +18,50 @@ os.makedirs("data", exist_ok=True)
 os.makedirs("static", exist_ok=True)
 
 app = FastAPI(title="Traffic AI Engine")
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# --- THE HANDSHAKE (CORS) ---
+# Add your UI team's Vercel URLs here
+origins = [
+    "http://localhost:3000",
+    "https://traffic-ai-dashboard.vercel.app", 
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 model = YOLO('yolov8m.pt') 
 
 def save_to_neon(job_id, filename, total_cars, video_url):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-
-        # 1. Insert the new record
-        cursor.execute("""
-            INSERT INTO traffic_logs (job_id, filename, total_cars, video_url)
-            VALUES (%s, %s, %s, %s)
-        """, (job_id, filename, total_cars, video_url))
+        cursor.execute("INSERT INTO traffic_logs (job_id, filename, total_cars, video_url) VALUES (%s, %s, %s, %s)", 
+                       (job_id, filename, total_cars, video_url))
         
-        # 2. AUTO-CLEAN: Keep only the 3 most recent records in the DB
-        cursor.execute("""
-            DELETE FROM traffic_logs 
-            WHERE id NOT IN (
-                SELECT id FROM traffic_logs 
-                ORDER BY created_at DESC 
-                LIMIT 3
-            )
-        """)
+        # Rolling 3 Cleanup
+        cursor.execute("DELETE FROM traffic_logs WHERE id NOT IN (SELECT id FROM traffic_logs ORDER BY created_at DESC LIMIT 3)")
         
         conn.commit()
         cursor.close()
         conn.close()
-        print(f"✅ Job {job_id} saved. Database cleaned to keep only last 3 records.")
+        print(f"✅ Job {job_id} saved and DB cleaned.")
     except Exception as e:
         print(f"❌ Database Error: {e}")
 
 @app.post("/api/v1/analyze")
 async def analyze_video(file: UploadFile = File(...)):
-    # Local Folder Cleanup: Keep only the 2 most recent files so the 3rd upload fits
-    all_videos = sorted([os.path.join("static", f) for f in os.listdir("static") if f.endswith(".mp4")], 
-                        key=os.path.getmtime)
+    # Webserver Storage Cleanup (Rolling 3)
+    all_videos = sorted([os.path.join("static", f) for f in os.listdir("static") if f.endswith(".mp4")], key=os.path.getmtime)
     while len(all_videos) >= 3:
         old_file = all_videos.pop(0)
         if os.path.isfile(old_file): os.unlink(old_file)
 
-    # File Setup
     original_filename = file.filename
     job_id = str(uuid.uuid4())[:8]
     input_path = os.path.join("data", original_filename)
@@ -68,28 +71,21 @@ async def analyze_video(file: UploadFile = File(...)):
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # AI Processing
     cap = cv2.VideoCapture(input_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps, width, height = int(cap.get(cv2.CAP_PROP_FPS)) or 30, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
-    counted_ids = set()
-    vehicle_positions = {} 
-    total_cars_passed = 0
+    counted_ids, vehicle_positions, total_cars_passed = set(), {}, 0
 
     while True:
         ret, frame = cap.read()
         if not ret: break
         results = model.track(frame, classes=[2, 5, 7], persist=True, tracker="bytetrack.yaml", conf=0.35, verbose=False)
         if results[0].boxes.id is not None:
-            boxes = results[0].boxes.xyxy.int().cpu().tolist()
-            track_ids = results[0].boxes.id.int().cpu().tolist()
+            boxes, track_ids = results[0].boxes.xyxy.int().cpu().tolist(), results[0].boxes.id.int().cpu().tolist()
             for box, track_id in zip(boxes, track_ids):
                 center_y = int((box[1] + box[3]) / 2)
                 if track_id not in counted_ids:
-                    # Logic: if previous Y was above line and current Y is below line
                     if track_id in vehicle_positions and vehicle_positions[track_id] < int(height*0.5) <= center_y:
                         counted_ids.add(track_id)
                         total_cars_passed += 1
