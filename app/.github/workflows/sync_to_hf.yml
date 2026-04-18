@@ -14,5 +14,8 @@ jobs:
           lfs: true
       - name: Push to hub
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://daratharunsai:$HF_TOKEN@huggingface.co/spaces/daratharunsai/traffic-ai-engine main
+          HF_TOKEN: ${{ secrets.HF_SYNC }}
+        run: |
+          git config --global user.email "git-sync@example.com"
+          git config --global user.name "Git Sync"
+          git push --force https://daratharunsai:$HF_TOKEN@huggingface.co/spaces/daratharunsai/traffic-ai-engine main
