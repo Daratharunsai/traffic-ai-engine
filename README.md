@@ -113,28 +113,21 @@ docker build -f Dockerfile.frontend -t traffic-engine-frontend .
 docker run -p 8501:8501 -v "$(pwd)/data:/app/data" traffic-engine-frontend
 ```
 
-### Railway Deployment (Recommended for Production)
+### Client Testing
 
-**Quick Deploy:**
+For client demos, you can use **ngrok** to expose your local application:
+
 ```bash
-# 1. Push to GitHub
-git add .
-git commit -m "Ready for Railway"
-git push origin main
+# Install ngrok from https://ngrok.com/download
 
-# 2. Go to railway.app and deploy from GitHub
-# Railway will auto-detect Python and use railway.toml
+# Expose API
+ngrok http 8000
+
+# Expose Frontend (in another terminal)
+ngrok http 8501
 ```
 
-**Manual Setup:**
-1. Go to [railway.app](https://railway.app)
-2. Click "New Project" → "Deploy from GitHub repo"
-3. Select your repository
-4. Railway will deploy the API automatically
-5. Add a second service for the frontend using `railway-frontend.toml`
-6. Connect the services and set environment variables
-
-**See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.**
+**See [LOCAL_DEPLOYMENT.md](LOCAL_DEPLOYMENT.md) for detailed instructions.**
 
 ## 📡 API Endpoints
 
