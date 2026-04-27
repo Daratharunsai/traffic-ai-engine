@@ -1,0 +1,17 @@
+# Railway Configuration for Streamlit Frontend
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "streamlit run frontend/app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true"
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[env]
+PYTHON_VERSION = "3.10"
+KMP_DUPLICATE_LIB_OK = "TRUE"
+STREAMLIT_SERVER_PORT = "$PORT"
+STREAMLIT_SERVER_ADDRESS = "0.0.0.0"

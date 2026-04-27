@@ -1,26 +1,46 @@
-# Lock to a stable, specific version of Linux (bookworm) so it never secretly breaks
-FROM python:3.10-slim-bookworm
+# Multi-stage build for Traffic AI Engine
 
-# Install the modern C++ system drivers (libgl1 replaces the old mesa package)
+# Stage 1: Base image with system dependencies
+FROM python:3.10-slim-bookworm AS base
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy your requirements file first
-COPY requirements.txt .
+# Stage 2: Dependencies
+FROM base AS dependencies
 
-# Install all your Python packages
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your API code into the container
-COPY . .
+# Stage 3: Production image
+FROM base AS production
 
-# Tell Docker which port the API will run on
+COPY --from=dependencies /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=dependencies /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY api/ ./api/
+COPY core/ ./core/
+COPY models/ ./models/
+
+# Create directories
+RUN mkdir -p data/input data/output static
+
+# Expose port
 EXPOSE 8000
 
-# The command to boot up the FastAPI server
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=5)" || exit 1
+
+# Run API server
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
